@@ -10,6 +10,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 
 PLUGIN_NAME = "dialog_fork"
+OUTPUT_PREFIX = "[DialogFork插件]："
 TIME_NAME_FORMAT = "%Y-%m-%d_%H:%M:%S.%f"
 TIME_DISPLAY_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -118,6 +119,10 @@ class DialogForkPlugin(Star):
             return f"{text}。分叉点说明：{note}"
         return text
 
+    @staticmethod
+    def _plain_result(event: AstrMessageEvent, text: str):
+        return event.plain_result(f"{OUTPUT_PREFIX}{text}")
+
     async def _conversation_exists(self, umo: str, cid: str) -> bool:
         conv = await self.context.conversation_manager.get_conversation(umo, cid)
         return conv is not None
@@ -190,7 +195,7 @@ class DialogForkPlugin(Star):
     ):
         """创建一个对话分叉点。"""
         if extra:
-            yield event.plain_result("不合法的命令格式，正确格式为：/fork [分叉点名称] [注释]")
+            yield self._plain_result(event, "不合法的命令格式，正确格式为：/fork [分叉点名称] [注释]")
             return
 
         umo = event.unified_msg_origin
@@ -234,13 +239,13 @@ class DialogForkPlugin(Star):
                             note,
                         )
 
-        yield event.plain_result(response)
+        yield self._plain_result(event, response)
 
     @filter.command("jump")
     async def jump(self, event: AstrMessageEvent, forkpoint_name: str = "", extra: str = ""):
         """跳转到一个对话分叉点。"""
         if not forkpoint_name or extra:
-            yield event.plain_result("不合法的命令格式，正确格式为：/jump <分叉点名称>")
+            yield self._plain_result(event, "不合法的命令格式，正确格式为：/jump <分叉点名称>")
             return
 
         umo = event.unified_msg_origin
@@ -268,7 +273,7 @@ class DialogForkPlugin(Star):
                         text = f"成功跳转到分叉点“{forkpoint_name}”，当前共有{count}段对话"
                     response = self._reply_with_note(text, note)
 
-        yield event.plain_result(response)
+        yield self._plain_result(event, response)
 
     @filter.command("forkpoint-rename")
     async def forkpoint_rename(
@@ -280,7 +285,8 @@ class DialogForkPlugin(Star):
     ):
         """重命名一个分叉点。"""
         if not old_name or not new_name or extra:
-            yield event.plain_result(
+            yield self._plain_result(
+                event,
                 "不合法的命令格式，正确格式为：/forkpoint-rename <旧分叉点名> <新分叉点名>"
             )
             return
@@ -298,13 +304,13 @@ class DialogForkPlugin(Star):
                 self._save_data()
                 response = f"成功将分叉点“{old_name}”重命名为“{new_name}”"
 
-        yield event.plain_result(response)
+        yield self._plain_result(event, response)
 
     @filter.command("forkpoint-list")
     async def forkpoint_list(self, event: AstrMessageEvent, extra: str = ""):
         """列出当前聊天窗口中的分叉点。"""
         if extra:
-            yield event.plain_result("不合法的命令格式，正确格式为：/forkpoint-list")
+            yield self._plain_result(event, "不合法的命令格式，正确格式为：/forkpoint-list")
             return
 
         umo = event.unified_msg_origin
@@ -318,9 +324,9 @@ class DialogForkPlugin(Star):
                 rows.append(f"分叉点名称：{name}，创建时间：{created_at}，备注：{note}".rstrip())
 
         if not rows:
-            yield event.plain_result("当前对话中暂无分叉点")
+            yield self._plain_result(event, "当前对话中暂无分叉点")
             return
-        yield event.plain_result("\n".join(rows))
+        yield self._plain_result(event, "\n".join(rows))
 
     @filter.command("forkpoint-remove")
     async def forkpoint_remove(
@@ -331,7 +337,7 @@ class DialogForkPlugin(Star):
     ):
         """删除一个分叉点。"""
         if not forkpoint_name or extra:
-            yield event.plain_result("不合法的命令格式，正确格式为：/forkpoint-remove <分叉点名称>")
+            yield self._plain_result(event, "不合法的命令格式，正确格式为：/forkpoint-remove <分叉点名称>")
             return
 
         umo = event.unified_msg_origin
@@ -356,7 +362,7 @@ class DialogForkPlugin(Star):
                     self._save_data()
                     response = f"成功删除分叉点“{forkpoint_name}”"
 
-        yield event.plain_result(response)
+        yield self._plain_result(event, response)
 
     @filter.after_message_sent()
     async def clear_after_reset_command(self, event: AstrMessageEvent):
