@@ -1,4 +1,4 @@
-# 对话分叉插件 dialog_fork
+# 对话分支插件 dialog_fork
 
 在 AstrBot 的同一聊天窗口内为当前 LLM 对话创建分叉点，并在之后跳转回任意分叉继续对话。
 
