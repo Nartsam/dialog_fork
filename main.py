@@ -315,7 +315,7 @@ class DialogForkPlugin(Star):
             for name, item in sorted(forks.items(), key=lambda pair: int(pair[1].get("t", 0))):
                 created_at = self._format_display_time(int(item.get("t", 0)))
                 note = item.get("n", "")
-                rows.append(f"{name} {created_at} {note}".rstrip())
+                rows.append(f"分叉点名称：{name}，创建时间：{created_at}，备注：{note}".rstrip())
 
         if not rows:
             yield event.plain_result("当前对话中暂无分叉点")
