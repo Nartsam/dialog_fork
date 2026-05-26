@@ -28,7 +28,7 @@ class DialogForkPlugin(Star):
         self.data_path = os.path.join(self.data_dir, "forkpoints.json")
         self._lock = asyncio.Lock()
         self._data = self._load_data()
-        logger.info("dialog_fork 插件已加载。")
+        logger.info("dialog_fork 插件已加载")
 
     def _load_data(self) -> dict[str, Any]:
         if not os.path.exists(self.data_path):
@@ -293,7 +293,7 @@ class DialogForkPlugin(Star):
         note: str = "",
         extra: str = "",
     ):
-        """创建一个对话分叉点。"""
+        """创建一个对话分叉点"""
         if extra:
             yield self._plain_result(event, "不合法的命令格式，正确格式为：/fork [分叉点名称] [注释]")
             return
@@ -361,7 +361,7 @@ class DialogForkPlugin(Star):
 
     @filter.command("jump")
     async def jump(self, event: AstrMessageEvent, forkpoint_name: str = "", extra: str = ""):
-        """跳转到一个对话分叉点。"""
+        """跳转到一个对话分叉点"""
         if not forkpoint_name or extra:
             yield self._plain_result(event, "不合法的命令格式，正确格式为：/jump <分叉点名称>")
             return
@@ -457,7 +457,7 @@ class DialogForkPlugin(Star):
         new_name: str = "",
         extra: str = "",
     ):
-        """重命名一个分叉点。"""
+        """重命名一个分叉点"""
         if not old_name or not new_name or extra:
             yield self._plain_result(
                 event,
@@ -497,7 +497,7 @@ class DialogForkPlugin(Star):
 
     @filter.command("forkpoint-list")
     async def forkpoint_list(self, event: AstrMessageEvent, extra: str = ""):
-        """列出当前聊天窗口中的分叉点。"""
+        """列出当前聊天窗口中的分叉点"""
         if extra:
             yield self._plain_result(event, "不合法的命令格式，正确格式为：/forkpoint-list")
             return
@@ -527,7 +527,7 @@ class DialogForkPlugin(Star):
         forkpoint_name: str = "",
         extra: str = "",
     ):
-        """删除一个分叉点。"""
+        """删除一个分叉点"""
         if not forkpoint_name or extra:
             yield self._plain_result(event, "不合法的命令格式，正确格式为：/forkpoint-remove <分叉点名称>")
             return
@@ -583,7 +583,7 @@ class DialogForkPlugin(Star):
         if remaining:
             logger.info(
                 f"dialog_fork 已在 {command} 后清理 {umo} 的部分分叉点，"
-                f"删除 {deleted} 条分叉对话，仍保留 {remaining} 条待后续清理。"
+                f"删除 {deleted} 条分叉对话，仍保留 {remaining} 条待后续清理"
             )
         else:
-            logger.info(f"dialog_fork 已在 {command} 后清空 {umo} 的分叉点，删除 {deleted} 条分叉对话。")
+            logger.info(f"dialog_fork 已在 {command} 后清空 {umo} 的分叉点，删除 {deleted} 条分叉对话")
