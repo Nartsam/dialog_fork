@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import os
 from datetime import datetime
@@ -15,9 +16,9 @@ TIME_NAME_FORMAT = "%Y-%m-%d_%H:%M:%S.%f"
 TIME_DISPLAY_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-@register(PLUGIN_NAME, "Nartsam", "对话分叉与跳转插件", "0.1.0")
+@register(PLUGIN_NAME, "Nartsam", "对话分叉与跳转插件", "0.2.0")
 class DialogForkPlugin(Star):
-    """Manage per-chat fork points by mapping them to AstrBot conversations."""
+    """Manage immutable per-chat fork points stored as AstrBot conversations."""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -82,10 +83,29 @@ class DialogForkPlugin(Star):
         dt = datetime.fromtimestamp(ms / 1000)
         return f"{dt.strftime(TIME_DISPLAY_FORMAT)}.{dt.microsecond // 1000:03d}"
 
+    def _record_time_text(self, item: Any) -> str:
+        if not isinstance(item, dict):
+            return self._format_display_time(self._now_ms())
+        try:
+            ms = int(item.get("t", self._now_ms()))
+        except (TypeError, ValueError):
+            ms = self._now_ms()
+        return self._format_display_time(ms)
+
+    @staticmethod
+    def _record_sort_time(item: Any) -> int:
+        if not isinstance(item, dict):
+            return 0
+        try:
+            return int(item.get("t", 0))
+        except (TypeError, ValueError):
+            return 0
+
     @staticmethod
     def _parse_history(history_raw: Any) -> list[dict[str, Any]]:
         if isinstance(history_raw, list):
-            return [item for item in history_raw if isinstance(item, dict)]
+            filtered = [item for item in history_raw if isinstance(item, dict)]
+            return copy.deepcopy(filtered)
         if not history_raw:
             return []
         try:
@@ -123,9 +143,44 @@ class DialogForkPlugin(Star):
     def _plain_result(event: AstrMessageEvent, text: str):
         return event.plain_result(f"{OUTPUT_PREFIX}{text}")
 
+    @staticmethod
+    def _snapshot_conversation_ids(forks: dict[str, Any]) -> set[str]:
+        cids: set[str] = set()
+        for item in forks.values():
+            if not isinstance(item, dict):
+                continue
+            cid = item.get("c")
+            if isinstance(cid, str) and cid:
+                cids.add(cid)
+        return cids
+
     async def _conversation_exists(self, umo: str, cid: str) -> bool:
+        if not isinstance(cid, str) or not cid:
+            return False
         conv = await self.context.conversation_manager.get_conversation(umo, cid)
         return conv is not None
+
+    async def _record_exists_locked(self, umo: str, forks: dict[str, Any], name: str) -> bool | None:
+        item = forks.get(name)
+        if not item:
+            return False
+        if not isinstance(item, dict):
+            forks.pop(name, None)
+            self._drop_empty_session(umo)
+            self._save_data()
+            return False
+        cid = item.get("c", "")
+        try:
+            exists = await self._conversation_exists(umo, cid)
+        except Exception as e:
+            logger.warning(f"dialog_fork 校验分叉 conversation 失败 ({cid}): {e}")
+            return None
+        if not exists:
+            forks.pop(name, None)
+            self._drop_empty_session(umo)
+            self._save_data()
+            return False
+        return True
 
     async def _prune_invalid_locked(self, umo: str) -> list[str]:
         session = self._session(umo)
@@ -133,7 +188,16 @@ class DialogForkPlugin(Star):
         removed: list[str] = []
         for name, item in list(forks.items()):
             cid = item.get("c") if isinstance(item, dict) else None
-            if not cid or not await self._conversation_exists(umo, cid):
+            if not cid:
+                forks.pop(name, None)
+                removed.append(name)
+                continue
+            try:
+                exists = await self._conversation_exists(umo, cid)
+            except Exception as e:
+                logger.warning(f"dialog_fork 校验分叉 conversation 失败 ({cid}): {e}")
+                continue
+            if not exists:
                 forks.pop(name, None)
                 removed.append(name)
         if removed:
@@ -146,18 +210,33 @@ class DialogForkPlugin(Star):
         forks = session.get("f", {})
         current_cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
         deleted = 0
-        for item in list(forks.values()):
+        changed = False
+        for name, item in list(forks.items()):
             cid = item.get("c") if isinstance(item, dict) else None
-            if not cid or cid == current_cid:
+            if not cid:
+                forks.pop(name, None)
+                changed = True
+                continue
+            if cid == current_cid:
+                forks.pop(name, None)
+                changed = True
                 continue
             try:
+                conv = await self.context.conversation_manager.get_conversation(umo, cid)
+                if not conv:
+                    forks.pop(name, None)
+                    changed = True
+                    continue
                 await self.context.conversation_manager.delete_conversation(umo, cid)
+                forks.pop(name, None)
                 deleted += 1
             except Exception as e:
                 logger.warning(f"dialog_fork 删除分叉 conversation 失败 ({cid}): {e}")
-        forks.clear()
+                continue
+            changed = True
         self._drop_empty_session(umo)
-        self._save_data()
+        if changed:
+            self._save_data()
         return deleted
 
     def _reset_commands(self) -> set[str]:
@@ -206,9 +285,15 @@ class DialogForkPlugin(Star):
             session = self._session(umo)
             forks = session["f"]
             if name in forks:
-                created_at = self._format_display_time(int(forks[name].get("t", self._now_ms())))
-                response = f"无法创建分叉点“{name}”，同名分叉点已于{created_at}创建"
-            else:
+                exists = await self._record_exists_locked(umo, forks, name)
+                if exists is None:
+                    response = f"无法创建分叉点“{name}”，底层存档对话查询失败"
+                elif exists:
+                    created_at = self._record_time_text(forks[name])
+                    response = f"无法创建分叉点“{name}”，同名分叉点已于{created_at}创建"
+                else:
+                    response = ""
+            if not response:
                 cm = self.context.conversation_manager
                 curr_cid = await cm.get_curr_conversation_id(umo)
                 if not curr_cid:
@@ -220,24 +305,34 @@ class DialogForkPlugin(Star):
                     else:
                         history = self._parse_history(conv.history)
                         count = self._dialog_count(history)
-                        new_cid = await cm.new_conversation(
-                            umo,
-                            event.get_platform_id(),
-                            content=history,
-                            title=f"fork:{name}",
-                            persona_id=getattr(conv, "persona_id", None),
-                        )
-                        await cm.switch_conversation(umo, curr_cid)
-
-                        item = {"c": new_cid, "t": self._now_ms()}
-                        if note:
-                            item["n"] = note
-                        forks[name] = item
-                        self._save_data()
-                        response = self._reply_with_note(
-                            f"成功创建分叉点“{name}”，共包含{count}段对话",
-                            note,
-                        )
+                        new_cid = None
+                        try:
+                            new_cid = await cm.new_conversation(
+                                umo,
+                                event.get_platform_id(),
+                                content=history,
+                                title=f"fork:{name}",
+                                persona_id=getattr(conv, "persona_id", None),
+                            )
+                            await cm.switch_conversation(umo, curr_cid)
+                        except Exception as e:
+                            logger.error(f"dialog_fork 创建分叉 conversation 失败: {e}")
+                            if new_cid:
+                                try:
+                                    await cm.delete_conversation(umo, new_cid)
+                                except Exception:
+                                    pass
+                            response = "无法创建分叉点，底层操作失败"
+                        else:
+                            item = {"c": new_cid, "t": self._now_ms()}
+                            if note:
+                                item["n"] = note
+                            forks[name] = item
+                            self._save_data()
+                            response = self._reply_with_note(
+                                f"成功创建分叉点“{name}”，共包含{count}段对话",
+                                note,
+                            )
 
         yield self._plain_result(event, response)
 
@@ -256,22 +351,58 @@ class DialogForkPlugin(Star):
             if not item:
                 response = f"无法跳转到分叉点“{forkpoint_name}”，该分叉点不存在"
             else:
-                cid = item.get("c")
-                conv = await self.context.conversation_manager.get_conversation(umo, cid)
-                if not conv:
+                cid = item.get("c") if isinstance(item, dict) else None
+                cm = self.context.conversation_manager
+                if not isinstance(cid, str) or not cid:
+                    snapshot_conv = None
+                else:
+                    try:
+                        snapshot_conv = await cm.get_conversation(umo, cid)
+                    except Exception as e:
+                        logger.error(f"dialog_fork 读取分叉 conversation 失败 ({cid}): {e}")
+                        snapshot_conv = "error"
+                if snapshot_conv == "error":
+                    response = f"无法跳转到分叉点“{forkpoint_name}”，底层操作失败"
+                elif not snapshot_conv:
                     forks.pop(forkpoint_name, None)
+                    self._drop_empty_session(umo)
                     self._save_data()
                     response = f"无法跳转到分叉点“{forkpoint_name}”，该分叉点不存在或已失效"
                 else:
-                    await self.context.conversation_manager.switch_conversation(umo, cid)
-                    history = self._parse_history(conv.history)
-                    count = self._dialog_count(history)
-                    note = item.get("n", "")
-                    if count == 0:
-                        text = f"成功跳转到分叉点“{forkpoint_name}”，创建该分叉点时未进行任何对话"
+                    history = self._parse_history(snapshot_conv.history)
+                    curr_cid = await cm.get_curr_conversation_id(umo)
+                    if curr_cid:
+                        curr_conv = await cm.get_conversation(umo, curr_cid)
                     else:
-                        text = f"成功跳转到分叉点“{forkpoint_name}”，当前共有{count}段对话"
-                    response = self._reply_with_note(text, note)
+                        curr_conv = None
+
+                    try:
+                        if curr_conv and curr_cid not in self._snapshot_conversation_ids(forks):
+                            await cm.update_conversation(
+                                umo,
+                                curr_cid,
+                                history=history,
+                                persona_id=getattr(snapshot_conv, "persona_id", None),
+                            )
+                        else:
+                            await cm.new_conversation(
+                                umo,
+                                event.get_platform_id(),
+                                content=history,
+                                title=f"jump:{forkpoint_name}",
+                                persona_id=getattr(snapshot_conv, "persona_id", None),
+                            )
+                    except Exception as e:
+                        logger.error(f"dialog_fork 跳转到分叉点失败 ({forkpoint_name}): {e}")
+                        response = f"无法跳转到分叉点“{forkpoint_name}”，底层操作失败"
+                    else:
+                        count = self._dialog_count(history)
+                        note = item.get("n", "")
+                        if count == 0:
+                            text = f"成功跳转到分叉点“{forkpoint_name}”，创建该分叉点时未进行任何对话"
+                        else:
+                            text = f"成功跳转到分叉点“{forkpoint_name}”，当前共有{count}段对话"
+                        response = self._reply_with_note(text, note)
 
         yield self._plain_result(event, response)
 
@@ -293,16 +424,31 @@ class DialogForkPlugin(Star):
 
         umo = event.unified_msg_origin
         async with self._lock:
+            response = ""
             forks = self._session(umo)["f"]
-            if old_name not in forks:
+            item = forks.get(old_name)
+            if not item:
                 response = f"无法重命名分叉点“{old_name}”，该分叉点不存在"
             elif new_name in forks:
-                created_at = self._format_display_time(int(forks[new_name].get("t", self._now_ms())))
-                response = f"无法重命名为“{new_name}”，同名分叉点已于{created_at}创建"
-            else:
-                forks[new_name] = forks.pop(old_name)
-                self._save_data()
-                response = f"成功将分叉点“{old_name}”重命名为“{new_name}”"
+                exists = await self._record_exists_locked(umo, forks, new_name)
+                if exists is None:
+                    response = f"无法重命名为“{new_name}”，底层存档对话查询失败"
+                elif exists:
+                    created_at = self._record_time_text(forks[new_name])
+                    response = f"无法重命名为“{new_name}”，同名分叉点已于{created_at}创建"
+                else:
+                    response = ""
+            if not response:
+                exists = await self._record_exists_locked(umo, forks, old_name)
+                if exists is None:
+                    response = f"无法重命名分叉点“{old_name}”，底层操作失败"
+                else:
+                    if not exists:
+                        response = f"无法重命名分叉点“{old_name}”，该分叉点不存在或已失效"
+                    else:
+                        forks[new_name] = forks.pop(old_name)
+                        self._save_data()
+                        response = f"成功将分叉点“{old_name}”重命名为“{new_name}”"
 
         yield self._plain_result(event, response)
 
@@ -318,10 +464,13 @@ class DialogForkPlugin(Star):
             await self._prune_invalid_locked(umo)
             forks = self._session(umo)["f"]
             rows = []
-            for name, item in sorted(forks.items(), key=lambda pair: int(pair[1].get("t", 0))):
-                created_at = self._format_display_time(int(item.get("t", 0)))
+            for name, item in sorted(forks.items(), key=lambda pair: self._record_sort_time(pair[1])):
+                created_at = self._record_time_text(item)
                 note = item.get("n", "")
-                rows.append(f"分叉点名称：{name}，创建时间：{created_at}，备注：{note}".rstrip())
+                line = f"分叉点名称：{name}，创建时间：{created_at}"
+                if note:
+                    line += f"，备注：{note}"
+                rows.append(line)
 
         if not rows:
             yield self._plain_result(event, "当前对话中暂无分叉点")
@@ -347,20 +496,33 @@ class DialogForkPlugin(Star):
             if not item:
                 response = f"无法删除分叉点“{forkpoint_name}”，该分叉点不存在"
             else:
-                target_cid = item.get("c")
+                target_cid = item.get("c") if isinstance(item, dict) else None
                 current_cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
-                if target_cid == current_cid:
-                    response = f"无法删除分叉点“{forkpoint_name}”，你当前正处于该分叉点"
+                if target_cid and target_cid == current_cid:
+                    response = f"无法删除分叉点“{forkpoint_name}”，当前对话正在使用该分叉点的存档"
                 else:
-                    if target_cid:
-                        try:
-                            await self.context.conversation_manager.delete_conversation(umo, target_cid)
-                        except Exception as e:
-                            logger.warning(f"dialog_fork 删除分叉 conversation 失败 ({target_cid}): {e}")
-                    forks.pop(forkpoint_name, None)
-                    self._drop_empty_session(umo)
-                    self._save_data()
-                    response = f"成功删除分叉点“{forkpoint_name}”"
+                    try:
+                        exists = await self._conversation_exists(umo, target_cid)
+                    except Exception as e:
+                        logger.warning(f"dialog_fork 校验分叉 conversation 失败 ({target_cid}): {e}")
+                        response = f"无法删除分叉点“{forkpoint_name}”，底层存档对话查询失败"
+                    else:
+                        if target_cid and exists:
+                            try:
+                                await self.context.conversation_manager.delete_conversation(umo, target_cid)
+                            except Exception as e:
+                                logger.warning(f"dialog_fork 删除分叉 conversation 失败 ({target_cid}): {e}")
+                                response = f"无法删除分叉点“{forkpoint_name}”，底层存档对话删除失败"
+                            else:
+                                forks.pop(forkpoint_name, None)
+                                self._drop_empty_session(umo)
+                                self._save_data()
+                                response = f"成功删除分叉点“{forkpoint_name}”"
+                        else:
+                            forks.pop(forkpoint_name, None)
+                            self._drop_empty_session(umo)
+                            self._save_data()
+                            response = f"成功删除分叉点“{forkpoint_name}”"
 
         yield self._plain_result(event, response)
 
@@ -374,4 +536,11 @@ class DialogForkPlugin(Star):
         umo = event.unified_msg_origin
         async with self._lock:
             deleted = await self._delete_fork_conversations_locked(umo)
-        logger.info(f"dialog_fork 已在 {command} 后清空 {umo} 的分叉点，删除 {deleted} 条分叉对话。")
+            remaining = len(self._data.get("s", {}).get(umo, {}).get("f", {}))
+        if remaining:
+            logger.info(
+                f"dialog_fork 已在 {command} 后清理 {umo} 的部分分叉点，"
+                f"删除 {deleted} 条分叉对话，仍保留 {remaining} 条待后续清理。"
+            )
+        else:
+            logger.info(f"dialog_fork 已在 {command} 后清空 {umo} 的分叉点，删除 {deleted} 条分叉对话。")
