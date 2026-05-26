@@ -66,7 +66,7 @@ class DialogForkPlugin(Star):
 
     def _drop_empty_session(self, umo: str) -> None:
         session = self._data.get("s", {}).get(umo)
-        if isinstance(session, dict) and not session.get("f"):
+        if isinstance(session, dict) and not session.get("f") and not session.get("w"):
             self._data.get("s", {}).pop(umo, None)
 
     @staticmethod
@@ -234,6 +234,16 @@ class DialogForkPlugin(Star):
                 logger.warning(f"dialog_fork 删除分叉 conversation 失败 ({cid}): {e}")
                 continue
             changed = True
+        work_cid = session.pop("w", None)
+        if work_cid:
+            changed = True
+            if work_cid != current_cid and work_cid not in self._snapshot_conversation_ids(forks):
+                try:
+                    conv = await self.context.conversation_manager.get_conversation(umo, work_cid)
+                    if conv:
+                        await self.context.conversation_manager.delete_conversation(umo, work_cid)
+                except Exception as e:
+                    logger.warning(f"dialog_fork 删除恢复工作 conversation 失败 ({work_cid}): {e}")
         self._drop_empty_session(umo)
         if changed:
             self._save_data()
@@ -249,20 +259,31 @@ class DialogForkPlugin(Star):
                 continue
             command = item.strip()
             if command:
-                bare = command
-                while bare and not bare[0].isalnum() and bare[0] != "_":
-                    bare = bare[1:]
                 commands.add(command)
-                if bare:
-                    commands.add(bare)
-                    commands.add(f"/{bare}")
         return commands
 
     @staticmethod
-    def _message_command(message: Any) -> str:
+    def _message_text(message: Any) -> str:
         if not isinstance(message, str):
             return ""
-        return message.strip().split(maxsplit=1)[0] if message.strip() else ""
+        return message.strip()
+
+    @staticmethod
+    def _is_prefixed_command(command: str) -> bool:
+        return bool(command) and not command[0].isalnum() and command[0] != "_"
+
+    def _is_reset_command_message(self, message: Any) -> bool:
+        text = self._message_text(message)
+        if not text:
+            return False
+        first_token = text.split(maxsplit=1)[0]
+        for command in self._reset_commands():
+            if self._is_prefixed_command(command):
+                if first_token == command:
+                    return True
+            elif text == command:
+                return True
+        return False
 
     @filter.command("fork")
     async def fork(
@@ -314,6 +335,8 @@ class DialogForkPlugin(Star):
                                 title=f"fork:{name}",
                                 persona_id=getattr(conv, "persona_id", None),
                             )
+                            if not new_cid:
+                                raise RuntimeError("new_conversation 返回了空 ID")
                             await cm.switch_conversation(umo, curr_cid)
                         except Exception as e:
                             logger.error(f"dialog_fork 创建分叉 conversation 失败: {e}")
@@ -385,13 +408,33 @@ class DialogForkPlugin(Star):
                                 persona_id=getattr(snapshot_conv, "persona_id", None),
                             )
                         else:
-                            await cm.new_conversation(
-                                umo,
-                                event.get_platform_id(),
-                                content=history,
-                                title=f"jump:{forkpoint_name}",
-                                persona_id=getattr(snapshot_conv, "persona_id", None),
-                            )
+                            work_cid = session.get("w")
+                            work_conv = None
+                            snapshot_cids = self._snapshot_conversation_ids(forks)
+                            if isinstance(work_cid, str) and work_cid:
+                                if work_cid not in snapshot_cids:
+                                    work_conv = await cm.get_conversation(umo, work_cid)
+                            if work_conv:
+                                await cm.update_conversation(
+                                    umo,
+                                    work_cid,
+                                    history=history,
+                                    persona_id=getattr(snapshot_conv, "persona_id", None),
+                                )
+                                await cm.switch_conversation(umo, work_cid)
+                            else:
+                                work_cid = await cm.new_conversation(
+                                    umo,
+                                    event.get_platform_id(),
+                                    content=history,
+                                    title=f"jump:{forkpoint_name}",
+                                    persona_id=getattr(snapshot_conv, "persona_id", None),
+                                )
+                                if not work_cid:
+                                    raise RuntimeError("new_conversation 返回了空 ID")
+                                session["w"] = work_cid
+                                self._save_data()
+                                await cm.switch_conversation(umo, work_cid)
                     except Exception as e:
                         logger.error(f"dialog_fork 跳转到分叉点失败 ({forkpoint_name}): {e}")
                         response = f"无法跳转到分叉点“{forkpoint_name}”，底层操作失败"
@@ -529,10 +572,10 @@ class DialogForkPlugin(Star):
     @filter.after_message_sent()
     async def clear_after_reset_command(self, event: AstrMessageEvent):
         """Clear fork points after configured reset/new commands have completed."""
-        command = self._message_command(event.message_str)
-        if command not in self._reset_commands():
+        if not self._is_reset_command_message(event.message_str):
             return
 
+        command = self._message_text(event.message_str).split(maxsplit=1)[0]
         umo = event.unified_msg_origin
         async with self._lock:
             deleted = await self._delete_fork_conversations_locked(umo)

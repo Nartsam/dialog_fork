@@ -1,14 +1,14 @@
 name: dialog_fork
 display_name: 对话分叉
-desc: 在同一聊天窗口内创建、恢复、重命名、列出和删除 LLM 对话存档点
-short_desc: 在对话中创建存档点，并随时恢复到存档时的上下文
+desc: 在同一聊天窗口内创建对话分叉点，可随时跳转、重命名、列出和删除指定分叉点
+short_desc: 在对话中创建分叉点，并随时恢复到分叉时的上下文
 help: |
   使用方法：
-  /fork [分叉点名称] [注释] - 基于当前对话创建存档点；不填名称时使用当前时间戳。
-  /jump <分叉点名称> - 将当前对话恢复到指定存档点创建时的状态。
-  /forkpoint-rename <旧分叉点名> <新分叉点名> - 重命名分叉点。
-  /forkpoint-list - 列出当前聊天窗口中的分叉点。
-  /forkpoint-remove <分叉点名称> - 删除指定分叉点。
+  /fork [分叉点名称] [注释] - 基于当前对话创建分叉点；不填名称时使用当前时间戳
+  /jump <分叉点名称> - 将当前对话恢复到指定分叉点创建时的状态
+  /forkpoint-rename <旧分叉点名> <新分叉点名> - 重命名分叉点
+  /forkpoint-list - 列出当前聊天窗口中的分叉点
+  /forkpoint-remove <分叉点名称> - 删除指定分叉点
 version: 0.2.0
 author: Nartsam
 astrbot_version: ">=4.23.1"
