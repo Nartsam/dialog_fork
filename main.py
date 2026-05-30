@@ -510,7 +510,7 @@ class DialogForkPlugin(Star):
             for name, item in sorted(forks.items(), key=lambda pair: self._record_sort_time(pair[1])):
                 created_at = self._record_time_text(item)
                 note = item.get("n", "")
-                line = f"分叉点名称：{name}，创建时间：{created_at}"
+                line = f"名称：{name}，创建于：{created_at}"
                 if note:
                     line += f"，备注：{note}"
                 rows.append(line)
@@ -518,7 +518,7 @@ class DialogForkPlugin(Star):
         if not rows:
             yield self._plain_result(event, "当前对话中暂无分叉点")
             return
-        yield self._plain_result(event, "\n".join(rows))
+        yield self._plain_result(event, "\n" + "\n".join(rows))
 
     @filter.command("forkpoint-remove")
     async def forkpoint_remove(
