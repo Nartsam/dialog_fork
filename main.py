@@ -249,40 +249,32 @@ class DialogForkPlugin(Star):
             self._save_data()
         return deleted
 
-    def _reset_commands(self) -> set[str]:
+    def _reset_command_names(self) -> set[str]:
         raw = self.config.get("reset_commands", ["/reset", "/new"])
         if not isinstance(raw, list):
             raw = ["/reset", "/new"]
-        commands: set[str] = set()
+        names: set[str] = set()
         for item in raw:
             if not isinstance(item, str):
                 continue
-            command = item.strip()
-            if command:
-                commands.add(command)
-        return commands
+            cmd = item.strip()
+            if not cmd:
+                continue
+            if cmd[0] not in ("_",) and not cmd[0].isalnum():
+                cmd = cmd[1:]
+            if cmd:
+                names.add(cmd)
+        return names
 
-    @staticmethod
-    def _message_text(message: Any) -> str:
-        if not isinstance(message, str):
-            return ""
-        return message.strip()
-
-    @staticmethod
-    def _is_prefixed_command(command: str) -> bool:
-        return bool(command) and not command[0].isalnum() and command[0] != "_"
-
-    def _is_reset_command_message(self, message: Any) -> bool:
-        text = self._message_text(message)
-        if not text:
+    def _is_reset_event(self, event: AstrMessageEvent) -> bool:
+        activated = event.get_extra("activated_handlers") or []
+        if not activated:
             return False
-        first_token = text.split(maxsplit=1)[0]
-        for command in self._reset_commands():
-            if self._is_prefixed_command(command):
-                if first_token == command:
+        names = self._reset_command_names()
+        for handler in activated:
+            for f in getattr(handler, "event_filters", []):
+                if getattr(f, "command_name", None) in names:
                     return True
-            elif text == command:
-                return True
         return False
 
     @filter.command("fork")
@@ -572,18 +564,20 @@ class DialogForkPlugin(Star):
     @filter.after_message_sent()
     async def clear_after_reset_command(self, event: AstrMessageEvent):
         """Clear fork points after configured reset/new commands have completed."""
-        if not self._is_reset_command_message(event.message_str):
+        if not self._is_reset_event(event):
             return
 
-        command = self._message_text(event.message_str).split(maxsplit=1)[0]
         umo = event.unified_msg_origin
         async with self._lock:
+            initial = len(self._data.get("s", {}).get(umo, {}).get("f", {}))
             deleted = await self._delete_fork_conversations_locked(umo)
             remaining = len(self._data.get("s", {}).get(umo, {}).get("f", {}))
+        if initial == 0:
+            return
         if remaining:
             logger.info(
-                f"dialog_fork 已在 {command} 后清理 {umo} 的部分分叉点，"
+                f"dialog_fork 已清理 {umo} 的部分分叉点（{initial - remaining}/{initial}），"
                 f"删除 {deleted} 条分叉对话，仍保留 {remaining} 条待后续清理"
             )
         else:
-            logger.info(f"dialog_fork 已在 {command} 后清空 {umo} 的分叉点，删除 {deleted} 条分叉对话")
+            logger.info(f"dialog_fork 已清空 {umo} 的 {initial} 个分叉点，删除 {deleted} 条分叉对话")
